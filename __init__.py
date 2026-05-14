@@ -170,7 +170,7 @@ def load(app: Flask):
         db.session.commit()
         return {"success": "Container killed"}
 
-    def renew_container(chal_id, team_id):
+    def renew_container(chal_id, user_id):
         # Get the requested challenge
         challenge = ContainerChallenge.challenge_model.query.filter_by(
             id=chal_id).first()
@@ -180,7 +180,7 @@ def load(app: Flask):
             return {"error": "Challenge not found"}, 400
 
         running_containers = ContainerInfoModel.query.filter_by(
-            challenge_id=challenge.id, team_id=team_id)
+            challenge_id=challenge.id, user_id=user_id)
         running_container = running_containers.first()
 
         if running_container is None:
@@ -195,7 +195,7 @@ def load(app: Flask):
 
         return {"success": "Container renewed", "expires": running_container.expires}
 
-    def create_container(chal_id, team_id):
+    def create_container(chal_id, user_id):
         # Get the requested challenge
         challenge = ContainerChallenge.challenge_model.query.filter_by(
             id=chal_id).first()
@@ -204,12 +204,12 @@ def load(app: Flask):
         if challenge is None:
             return {"error": "Challenge not found"}, 400
 
-        # Check for any existing containers for the team
+        # Check for any existing containers for the user
         running_containers = ContainerInfoModel.query.filter_by(
-            challenge_id=challenge.id, team_id=team_id)
+            challenge_id=challenge.id, user_id=user_id)
         running_container = running_containers.first()
 
-        # If a container is already running for the team, return it
+        # If a container is already running for the user, return it
         if running_container:
             # Check if Docker says the container is still running before returning it
             try:
@@ -254,7 +254,7 @@ def load(app: Flask):
         new_container = ContainerInfoModel(
             container_id=created_container.id,
             challenge_id=challenge.id,
-            team_id=team_id,
+            user_id=user_id,
             port=port,
             timestamp=int(time.time()),
             expires=expires
@@ -286,11 +286,9 @@ def load(app: Flask):
 
         if user is None:
             return {"error": "User not found"}, 400
-        if user.team is None:
-            return {"error": "User not a member of a team"}, 400
 
         try:
-            return create_container(request.json.get("chal_id"), user.team.id)
+            return create_container(request.json.get("chal_id"), user.id)
         except ContainerException as err:
             return {"error": str(err)}, 500
 
@@ -311,11 +309,9 @@ def load(app: Flask):
 
         if user is None:
             return {"error": "User not found"}, 400
-        if user.team is None:
-            return {"error": "User not a member of a team"}, 400
 
         try:
-            return renew_container(request.json.get("chal_id"), user.team.id)
+            return renew_container(request.json.get("chal_id"), user.id)
         except ContainerException as err:
             return {"error": str(err)}, 500
 
@@ -336,16 +332,14 @@ def load(app: Flask):
 
         if user is None:
             return {"error": "User not found"}, 400
-        if user.team is None:
-            return {"error": "User not a member of a team"}, 400
 
         running_container: ContainerInfoModel = ContainerInfoModel.query.filter_by(
-            challenge_id=request.json.get("chal_id"), team_id=user.team.id).first()
+            challenge_id=request.json.get("chal_id"), user_id=user.id).first()
 
         if running_container:
             kill_container(running_container.container_id)
 
-        return create_container(request.json.get("chal_id"), user.team.id)
+        return create_container(request.json.get("chal_id"), user.id)
 
     @containers_bp.route('/api/stop', methods=['POST'])
     @authed_only
@@ -364,11 +358,9 @@ def load(app: Flask):
 
         if user is None:
             return {"error": "User not found"}, 400
-        if user.team is None:
-            return {"error": "User not a member of a team"}, 400
 
         running_container: ContainerInfoModel = ContainerInfoModel.query.filter_by(
-            challenge_id=request.json.get("chal_id"), team_id=user.team.id).first()
+            challenge_id=request.json.get("chal_id"), user_id=user.id).first()
 
         if running_container:
             return kill_container(running_container.container_id)
