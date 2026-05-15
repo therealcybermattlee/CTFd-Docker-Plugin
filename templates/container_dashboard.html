@@ -58,6 +58,8 @@
 				</td>
 				<td><strong>Expires</strong>
 				</td>
+				<td><strong>Status</strong>
+				</td>
 				<td><strong>Running</strong>
 				</td>
 				<td><strong>Kill</strong>
@@ -67,20 +69,29 @@
 			{% if containers %}
 			{% for c in containers %}
 			<tr>
-				<td class="container_item" id="{{ c.container_id }}">{{ c.container_id[:12] }}</td>
+				<td class="container_item" id="{{ c.container_id or c.id }}">{{ c.container_id[:12] if c.container_id else "—" }}</td>
 				<td>{{ c.challenge.image }}</td>
 				<td>{{ c.challenge.name }} [{{ c.challenge_id }}]</td>
 				<td>{{ c.user.name }} [{{ c.user_id }}]</td>
-				<td>{{ c.port }}</td>
+				<td>{{ c.port if c.port is not none else "—" }}</td>
 				<td>{{ c.timestamp|format_time }}</td>
 				<td>{{ c.expires|format_time }}</td>
+				{% if c.status == "running" %}
+				<td><span class="badge badge-success">running</span></td>
+				{% elif c.status == "provisioning" %}
+				<td><span class="badge badge-info">provisioning</span></td>
+				{% elif c.status == "failed" %}
+				<td><span class="badge badge-danger" title="{{ c.error_message or '' }}">failed</span></td>
+				{% else %}
+				<td><span class="badge badge-secondary">{{ c.status }}</span></td>
+				{% endif %}
 				{% if c.is_running %}
 				<td><span class="badge badge-success">Yes</span></td>
 				{% else %}
 				<td><span class="badge badge-danger">No</span></td>
 				{% endif %}
 				<td><button class="btn btn-danger containers-kill-btn"
-						onclick="killContainer('{{ c.container_id }}')"><i class="fa fa-times"></i></button></td>
+						onclick="killContainer({{ c.id }})"><i class="fa fa-times"></i></button></td>
 			</tr>
 			{% endfor %}
 			{% endif %}
@@ -116,7 +127,7 @@
 		};
 	}
 
-	function killContainer(container_id) {
+	function killContainer(row_id) {
 		var path = "/containers/api/kill";
 
 		var xhr = new XMLHttpRequest();
@@ -124,12 +135,10 @@
 		xhr.setRequestHeader("Content-Type", "application/json");
 		xhr.setRequestHeader("Accept", "application/json");
 		xhr.setRequestHeader("CSRF-Token", init.csrfNonce);
-		xhr.send(JSON.stringify({ container_id: container_id }));
+		xhr.send(JSON.stringify({ id: row_id }));
 		xhr.onload = function () {
 			var data = JSON.parse(this.responseText);
-			if (data.success == undefined) {
-				purgeButton.removeAttribute("disabled");
-			} else {
+			if (data.success !== undefined) {
 				window.location.reload();
 			}
 			console.log(data);

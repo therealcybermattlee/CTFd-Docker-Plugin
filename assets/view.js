@@ -51,108 +51,153 @@ function mergeQueryParams(parameters, queryParameters) {
 	return queryParameters;
 }
 
-function container_request(challenge_id) {
-	var path = "/containers/api/request";
-	var requestButton = document.getElementById("container-request-btn");
-	var requestResult = document.getElementById("container-request-result");
+function _container_show_error(msg) {
+	var requestError = document.getElementById("container-request-error");
+	requestError.style.display = "";
+	requestError.firstElementChild.innerHTML = msg;
+}
+
+function _container_restore_button(button, originalLabel) {
+	if (!button) return;
+	button.innerHTML = originalLabel;
+	button.removeAttribute("disabled");
+}
+
+function _container_show_running(data, opts) {
+	opts = opts || {};
 	var connectionInfo = document.getElementById("container-connection-info");
+	var requestResult = document.getElementById("container-request-result");
 	var containerExpires = document.getElementById("container-expires");
-	var containerExpiresTime = document.getElementById(
-		"container-expires-time"
-	);
+	var containerExpiresTime = document.getElementById("container-expires-time");
+	var requestButton = document.getElementById("container-request-btn");
 	var requestError = document.getElementById("container-request-error");
 
-	var originalLabel = requestButton.innerHTML;
-	requestButton.setAttribute("disabled", "disabled");
-	requestButton.innerHTML = "Provisioning… (may take up to a minute)";
+	requestError.style.display = "none";
+	requestError.firstElementChild.innerHTML = "";
+	if (opts.removeRequestButton && requestButton && requestButton.parentNode) {
+		requestButton.parentNode.removeChild(requestButton);
+	}
+	connectionInfo.innerHTML = data.hostname + ":" + data.port;
+	containerExpires.innerHTML = Math.ceil(
+		(new Date(data.expires * 1000) - new Date()) / 1000 / 60
+	);
+	containerExpiresTime.innerHTML = new Date(
+		data.expires * 1000
+	).toLocaleTimeString();
+	requestResult.style.display = "";
+}
 
-	var xhr = new XMLHttpRequest();
-	xhr.open("POST", path, true);
-	xhr.setRequestHeader("Content-Type", "application/json");
-	xhr.setRequestHeader("Accept", "application/json");
-	xhr.setRequestHeader("CSRF-Token", init.csrfNonce);
-	xhr.send(JSON.stringify({ chal_id: challenge_id }));
-	xhr.onload = function () {
-		var data = JSON.parse(this.responseText);
-		if (data.error !== undefined) {
-			// Container error
-			requestError.style.display = "";
-			requestError.firstElementChild.innerHTML = data.error;
-			requestButton.innerHTML = originalLabel;
-			requestButton.removeAttribute("disabled");
-		} else if (data.message !== undefined) {
-			// CTFd error
-			requestError.style.display = "";
-			requestError.firstElementChild.innerHTML = data.message;
-			requestButton.innerHTML = originalLabel;
-			requestButton.removeAttribute("disabled");
-		} else {
-			// Success
-			requestError.style.display = "none";
-			requestError.firstElementChild.innerHTML = "";
-			requestButton.parentNode.removeChild(requestButton);
-			connectionInfo.innerHTML = data.hostname + ":" + data.port;
-			containerExpires.innerHTML = Math.ceil(
-				(new Date(data.expires * 1000) - new Date()) / 1000 / 60
-			);
-			containerExpiresTime.innerHTML = new Date(
-				data.expires * 1000
-			).toLocaleTimeString();
-			requestResult.style.display = "";
+function _container_poll_status(rowId, button, originalLabel, opts) {
+	var attempts = 0;
+	var maxAttempts = 60; // 60 * 3s = 3 minutes
+	var timer = setInterval(function () {
+		attempts++;
+		if (attempts > maxAttempts) {
+			clearInterval(timer);
+			_container_show_error("Provisioning timed out after 3 minutes");
+			_container_restore_button(button, originalLabel);
+			return;
 		}
-		console.log(data);
-	};
+		fetch("/containers/api/status/" + rowId, {
+			method: "GET",
+			headers: {
+				"Accept": "application/json",
+				"CSRF-Token": init.csrfNonce,
+			},
+			credentials: "same-origin",
+		})
+			.then(function (r) {
+				return r.json();
+			})
+			.then(function (data) {
+				if (data.status === "running") {
+					clearInterval(timer);
+					_container_show_running(data, opts);
+					if (opts && opts.restoreButtonOnSuccess) {
+						_container_restore_button(button, originalLabel);
+					}
+				} else if (data.status === "failed") {
+					clearInterval(timer);
+					_container_show_error(data.error || "Provisioning failed");
+					_container_restore_button(button, originalLabel);
+				}
+				// else: still provisioning, keep polling
+			})
+			.catch(function (err) {
+				clearInterval(timer);
+				_container_show_error("Status check failed: " + err);
+				_container_restore_button(button, originalLabel);
+			});
+	}, 3000);
+}
+
+function _container_async_action(path, challenge_id, button, opts) {
+	var originalLabel = button.innerHTML;
+	button.setAttribute("disabled", "disabled");
+	button.innerHTML = "Provisioning…";
+
+	fetch(path, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			"Accept": "application/json",
+			"CSRF-Token": init.csrfNonce,
+		},
+		credentials: "same-origin",
+		body: JSON.stringify({ chal_id: challenge_id }),
+	})
+		.then(function (r) {
+			return r.json();
+		})
+		.then(function (data) {
+			if (data.error !== undefined) {
+				_container_show_error(data.error);
+				_container_restore_button(button, originalLabel);
+				return;
+			}
+			if (data.message !== undefined) {
+				_container_show_error(data.message);
+				_container_restore_button(button, originalLabel);
+				return;
+			}
+			if (data.status === "running") {
+				_container_show_running(data, opts);
+				if (opts && opts.restoreButtonOnSuccess) {
+					_container_restore_button(button, originalLabel);
+				}
+				return;
+			}
+			if (data.status === "provisioning") {
+				_container_poll_status(data.id, button, originalLabel, opts);
+				return;
+			}
+			_container_show_error("Unexpected response: " + JSON.stringify(data));
+			_container_restore_button(button, originalLabel);
+		})
+		.catch(function (err) {
+			_container_show_error("Request failed: " + err);
+			_container_restore_button(button, originalLabel);
+		});
+}
+
+function container_request(challenge_id) {
+	var requestButton = document.getElementById("container-request-btn");
+	_container_async_action(
+		"/containers/api/request",
+		challenge_id,
+		requestButton,
+		{ removeRequestButton: true }
+	);
 }
 
 function container_reset(challenge_id) {
-	var path = "/containers/api/reset";
 	var resetButton = document.getElementById("container-reset-btn");
-	var requestResult = document.getElementById("container-request-result");
-	var containerExpires = document.getElementById("container-expires");
-	var containerExpiresTime = document.getElementById(
-		"container-expires-time"
+	_container_async_action(
+		"/containers/api/reset",
+		challenge_id,
+		resetButton,
+		{ restoreButtonOnSuccess: true }
 	);
-	var connectionInfo = document.getElementById("container-connection-info");
-	var requestError = document.getElementById("container-request-error");
-
-	var originalLabel = resetButton.innerHTML;
-	resetButton.setAttribute("disabled", "disabled");
-	resetButton.innerHTML = "Provisioning…";
-
-	var xhr = new XMLHttpRequest();
-	xhr.open("POST", path, true);
-	xhr.setRequestHeader("Content-Type", "application/json");
-	xhr.setRequestHeader("Accept", "application/json");
-	xhr.setRequestHeader("CSRF-Token", init.csrfNonce);
-	xhr.send(JSON.stringify({ chal_id: challenge_id }));
-	xhr.onload = function () {
-		var data = JSON.parse(this.responseText);
-		resetButton.innerHTML = originalLabel;
-		if (data.error !== undefined) {
-			// Container rrror
-			requestError.style.display = "";
-			requestError.firstElementChild.innerHTML = data.error;
-			resetButton.removeAttribute("disabled");
-		} else if (data.message !== undefined) {
-			// CTFd error
-			requestError.style.display = "";
-			requestError.firstElementChild.innerHTML = data.message;
-			resetButton.removeAttribute("disabled");
-		} else {
-			// Success
-			requestError.style.display = "none";
-			connectionInfo.innerHTML = data.hostname + ":" + data.port;
-			containerExpires.innerHTML = Math.ceil(
-				(new Date(data.expires * 1000) - new Date()) / 1000 / 60
-			);
-			containerExpiresTime.innerHTML = new Date(
-				data.expires * 1000
-			).toLocaleTimeString();
-			requestResult.style.display = "";
-			resetButton.removeAttribute("disabled");
-		}
-		console.log(data);
-	};
 }
 
 function container_renew(challenge_id) {

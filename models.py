@@ -27,20 +27,27 @@ class ContainerChallengeModel(Challenges):
 
 class ContainerInfoModel(db.Model):
     __mapper_args__ = {"polymorphic_identity": "container_info"}
-    container_id = db.Column(db.String(512), primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    container_id = db.Column(db.String(512), nullable=True, index=True)
     challenge_id = db.Column(
         db.Integer, db.ForeignKey("challenges.id", ondelete="CASCADE")
     )
     user_id = db.Column(
         db.Integer, db.ForeignKey("users.id", ondelete="CASCADE")
     )
-    port = db.Column(db.Integer)
+    port = db.Column(db.Integer, nullable=True)
     hostname = db.Column(db.String(512), nullable=True)
+    status = db.Column(db.String(32), default="provisioning", nullable=False)
+    error_message = db.Column(db.Text, nullable=True)
     timestamp = db.Column(db.Integer)
     expires = db.Column(db.Integer)
     user = relationship("Users", foreign_keys=[user_id])
     challenge = relationship(ContainerChallengeModel,
                              foreign_keys=[challenge_id])
+    __table_args__ = (
+        db.UniqueConstraint("challenge_id", "user_id",
+                            name="uq_container_chal_user"),
+    )
 
 
 class ContainerSettingsModel(db.Model):

@@ -56,7 +56,7 @@ Connect to your CTFd database (MariaDB/MySQL or SQLite depending on your setup) 
 
 ### Notes & caveats
 
-- Provisioning a container group takes ~30-60 seconds; the "Get Connection Info" button shows a `Provisioning…` state while it waits.
+- Provisioning a container group takes ~30-60 seconds. The "Get Connection Info" button shows a `Provisioning…` state while the frontend polls `/containers/api/status/<id>` every 3 seconds. The original POST returns immediately with HTTP 202, so this works behind reverse proxies that have short response timeouts (default Gunicorn 30s, default nginx 60s, Cloudflare free tier 100s).
 - The volumes field on challenges is **ignored** in ACI mode — host-path mounts don't translate to ACI.
 - Commands are parsed via `shlex.split`. For complex commands, use `sh -c "your full command line"`.
 - The image dropdown is populated by listing repos/tags from the ACR. The CTFd identity needs **AcrPull** on the ACR for this to work.

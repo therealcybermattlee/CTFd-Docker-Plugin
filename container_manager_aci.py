@@ -161,10 +161,11 @@ class ACIContainerManager:
             deleted = False
             for container in containers:
                 if container.expires - now < 0:
-                    try:
-                        self.kill_container(container.container_id)
-                    except ContainerException as e:
-                        print(f"[CTFd-ACI] kill_expired_containers: {e}")
+                    if container.container_id:
+                        try:
+                            self.kill_container(container.container_id)
+                        except ContainerException as e:
+                            print(f"[CTFd-ACI] kill_expired_containers: {e}")
                     db.session.delete(container)
                     deleted = True
             if deleted:

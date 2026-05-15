@@ -121,19 +121,20 @@ class ContainerManager:
     @run_command
     def kill_expired_containers(self, app: Flask):
         with app.app_context():
+            now = int(time.time())
             containers: "list[ContainerInfoModel]" = ContainerInfoModel.query.all()
-
+            deleted = False
             for container in containers:
-                delta_seconds = container.expires - int(time.time())
-                if delta_seconds < 0:
-                    try:
-                        self.kill_container(container.container_id)
-                    except ContainerException:
-                        print(
-                            "[Container Expiry Job] Docker is not initialized. Please check your settings.")
-
+                if container.expires - now < 0:
+                    if container.container_id:
+                        try:
+                            self.kill_container(container.container_id)
+                        except ContainerException as e:
+                            print(f"[Container Expiry Job] kill failed: {e}")
                     db.session.delete(container)
-                    db.session.commit()
+                    deleted = True
+            if deleted:
+                db.session.commit()
 
     @run_command
     def is_container_running(self, container_id: str) -> bool:

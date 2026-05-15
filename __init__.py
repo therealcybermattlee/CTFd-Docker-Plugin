@@ -4,8 +4,10 @@ import time
 import json
 import datetime
 import math
+import threading
 
 from flask import Blueprint, request, Flask, render_template, url_for, redirect, flash
+from sqlalchemy.exc import IntegrityError
 
 from CTFd.models import db, Solves
 from CTFd.plugins import register_plugin_assets_directory
@@ -202,80 +204,101 @@ def load(app: Flask):
 
         return {"success": "Container renewed", "expires": running_container.expires}
 
-    def create_container(chal_id, user_id):
-        # Get the requested challenge
-        challenge = ContainerChallenge.challenge_model.query.filter_by(
-            id=chal_id).first()
+    def _running_response(row: ContainerInfoModel):
+        return {
+            "status": "running",
+            "id": row.id,
+            "hostname": row.hostname or container_manager.settings.get("docker_hostname", ""),
+            "port": row.port,
+            "expires": row.expires,
+        }
 
-        # Make sure the challenge exists and is a container challenge
-        if challenge is None:
-            return {"error": "Challenge not found"}, 400
-
-        # Check for any existing containers for the user
-        running_containers = ContainerInfoModel.query.filter_by(
-            challenge_id=challenge.id, user_id=user_id)
-        running_container = running_containers.first()
-
-        # If a container is already running for the user, return it
-        if running_container:
-            # Check if Docker says the container is still running before returning it
+    def _provision_async(manager, row_id, image, internal_port, command, volumes, expiration_seconds):
+        with app.app_context():
+            if ContainerInfoModel.query.get(row_id) is None:
+                return
             try:
-                if container_manager.is_container_running(
-                        running_container.container_id):
-                    return json.dumps({
-                        "status": "already_running",
-                        "hostname": running_container.hostname or container_manager.settings.get("docker_hostname", ""),
-                        "port": running_container.port,
-                        "expires": running_container.expires
-                    })
-                else:
-                    # Container is not running, it must have died or been killed,
-                    # remove it from the database and create a new one
-                    running_containers.delete()
+                created = manager.create_container(image, internal_port, command, volumes)
+            except ContainerException as e:
+                row = ContainerInfoModel.query.get(row_id)
+                if row is not None:
+                    row.status = "failed"
+                    row.error_message = str(e)[:1000]
                     db.session.commit()
-            except ContainerException as err:
-                return {"error": str(err)}, 500
+                print(f"[CTFd] provision failed for row {row_id}: {e}")
+                return
+            except Exception as e:
+                row = ContainerInfoModel.query.get(row_id)
+                if row is not None:
+                    row.status = "failed"
+                    row.error_message = str(e)[:1000]
+                    db.session.commit()
+                print(f"[CTFd] provision exception for row {row_id}: {e}")
+                return
 
-        # TODO: Should insert before creating container, then update. That would avoid a TOCTOU issue
+            # Re-fetch in case the user stopped/reset the request while we were
+            # blocked on the backend. If the row is gone, the user no longer
+            # wants this container — kill it so we don't leak (and pay for) it.
+            row = ContainerInfoModel.query.get(row_id)
+            if row is None:
+                try:
+                    manager.kill_container(created.id)
+                except Exception as e:
+                    print(f"[CTFd] orphan cleanup failed for {created.id}: {e}")
+                return
 
-        # Run a new Docker container
-        try:
-            created_container = container_manager.create_container(
-                challenge.image, challenge.port, challenge.command, challenge.volumes)
-        except ContainerException as err:
-            return {"error": str(err)}
+            row.container_id = created.id
+            row.hostname = getattr(created, "hostname", None)
+            host_port = None
+            try:
+                host_port = manager.get_container_port(created.id)
+            except Exception as e:
+                print(f"[CTFd] get_container_port failed for {created.id}: {e}")
+            if host_port is None:
+                row.port = internal_port
+            else:
+                try:
+                    row.port = int(host_port)
+                except (TypeError, ValueError):
+                    row.port = internal_port
+            if expiration_seconds > 0:
+                row.expires = int(time.time() + expiration_seconds)
+            row.status = "running"
+            row.error_message = None
+            db.session.commit()
 
-        # Fetch the random port Docker assigned
-        port = container_manager.get_container_port(created_container.id)
-
-        # Port may be blank if the container failed to start
-        if port is None:
-            return json.dumps({
-                "status": "error",
-                "error": "Could not get port"
-            })
-
-        expires = int(time.time() + container_manager.expiration_seconds)
-
-        # Insert the new container into the database
-        new_container = ContainerInfoModel(
-            container_id=created_container.id,
+    def _spawn_new(challenge, user_id):
+        now = int(time.time())
+        initial_expires = now + (container_manager.expiration_seconds or 3600)
+        row = ContainerInfoModel(
             challenge_id=challenge.id,
             user_id=user_id,
-            port=port,
-            hostname=getattr(created_container, "hostname", None),
-            timestamp=int(time.time()),
-            expires=expires
+            status="provisioning",
+            timestamp=now,
+            expires=initial_expires,
         )
-        db.session.add(new_container)
-        db.session.commit()
+        db.session.add(row)
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            existing = ContainerInfoModel.query.filter_by(
+                challenge_id=challenge.id, user_id=user_id).first()
+            if existing:
+                if existing.status == "running":
+                    return _running_response(existing), 200
+                return {"status": existing.status, "id": existing.id}, 202
+            return {"error": "Concurrent request collision"}, 500
 
-        return json.dumps({
-            "status": "created",
-            "hostname": new_container.hostname or container_manager.settings.get("docker_hostname", ""),
-            "port": port,
-            "expires": expires
-        })
+        threading.Thread(
+            target=_provision_async,
+            args=(container_manager, row.id, challenge.image, challenge.port,
+                  challenge.command, challenge.volumes,
+                  container_manager.expiration_seconds),
+            daemon=True,
+        ).start()
+
+        return {"status": "provisioning", "id": row.id}, 202
 
     @containers_bp.route('/api/request', methods=['POST'])
     @authed_only
@@ -285,20 +308,58 @@ def load(app: Flask):
     def route_request_container():
         user = get_current_user()
 
-        # Validate the request
         if request.json is None:
             return {"error": "Invalid request"}, 400
-
-        if request.json.get("chal_id", None) is None:
+        chal_id = request.json.get("chal_id")
+        if chal_id is None:
             return {"error": "No chal_id specified"}, 400
-
         if user is None:
             return {"error": "User not found"}, 400
 
-        try:
-            return create_container(request.json.get("chal_id"), user.id)
-        except ContainerException as err:
-            return {"error": str(err)}, 500
+        challenge = ContainerChallenge.challenge_model.query.filter_by(id=chal_id).first()
+        if challenge is None:
+            return {"error": "Challenge not found"}, 400
+
+        existing = ContainerInfoModel.query.filter_by(
+            challenge_id=chal_id, user_id=user.id).first()
+
+        if existing:
+            if existing.status == "running":
+                try:
+                    if container_manager.is_container_running(existing.container_id):
+                        return _running_response(existing), 200
+                    db.session.delete(existing)
+                    db.session.commit()
+                except ContainerException as err:
+                    return {"error": str(err)}, 500
+            elif existing.status == "provisioning":
+                return {"status": "provisioning", "id": existing.id}, 202
+            elif existing.status == "failed":
+                # Allow retry by clearing the failed row.
+                db.session.delete(existing)
+                db.session.commit()
+
+        return _spawn_new(challenge, user.id)
+
+    @containers_bp.route('/api/status/<int:row_id>', methods=['GET'])
+    @authed_only
+    @during_ctf_time_only
+    @require_verified_emails
+    @ratelimit(method="GET", limit=120, interval=60)
+    def route_container_status(row_id):
+        user = get_current_user()
+        if user is None:
+            return {"error": "User not found"}, 400
+        row = ContainerInfoModel.query.get(row_id)
+        if row is None:
+            return {"error": "Not found"}, 404
+        if row.user_id != user.id:
+            return {"error": "Forbidden"}, 403
+        if row.status == "running":
+            return _running_response(row), 200
+        if row.status == "failed":
+            return {"status": "failed", "error": row.error_message or "Provisioning failed"}, 200
+        return {"status": "provisioning", "id": row.id}, 202
 
     @containers_bp.route('/api/renew', methods=['POST'])
     @authed_only
@@ -331,23 +392,31 @@ def load(app: Flask):
     def route_restart_container():
         user = get_current_user()
 
-        # Validate the request
         if request.json is None:
             return {"error": "Invalid request"}, 400
-
-        if request.json.get("chal_id", None) is None:
+        chal_id = request.json.get("chal_id")
+        if chal_id is None:
             return {"error": "No chal_id specified"}, 400
-
         if user is None:
             return {"error": "User not found"}, 400
 
-        running_container: ContainerInfoModel = ContainerInfoModel.query.filter_by(
-            challenge_id=request.json.get("chal_id"), user_id=user.id).first()
+        challenge = ContainerChallenge.challenge_model.query.filter_by(id=chal_id).first()
+        if challenge is None:
+            return {"error": "Challenge not found"}, 400
 
-        if running_container:
-            kill_container(running_container.container_id)
+        existing = ContainerInfoModel.query.filter_by(
+            challenge_id=chal_id, user_id=user.id).first()
 
-        return create_container(request.json.get("chal_id"), user.id)
+        if existing:
+            if existing.container_id:
+                try:
+                    container_manager.kill_container(existing.container_id)
+                except ContainerException as err:
+                    print(f"[CTFd] reset: kill_container({existing.container_id}) failed: {err}")
+            db.session.delete(existing)
+            db.session.commit()
+
+        return _spawn_new(challenge, user.id)
 
     @containers_bp.route('/api/stop', methods=['POST'])
     @authed_only
@@ -367,13 +436,19 @@ def load(app: Flask):
         if user is None:
             return {"error": "User not found"}, 400
 
-        running_container: ContainerInfoModel = ContainerInfoModel.query.filter_by(
+        row: ContainerInfoModel = ContainerInfoModel.query.filter_by(
             challenge_id=request.json.get("chal_id"), user_id=user.id).first()
 
-        if running_container:
-            return kill_container(running_container.container_id)
-
-        return {"error": "No container found"}, 400
+        if row is None:
+            return {"error": "No container found"}, 400
+        if row.container_id:
+            try:
+                container_manager.kill_container(row.container_id)
+            except ContainerException as err:
+                return {"error": str(err)}, 500
+        db.session.delete(row)
+        db.session.commit()
+        return {"success": "Container killed"}
 
     @containers_bp.route('/api/kill', methods=['POST'])
     @admins_only
@@ -381,20 +456,43 @@ def load(app: Flask):
         if request.json is None:
             return {"error": "Invalid request"}, 400
 
-        if request.json.get("container_id", None) is None:
-            return {"error": "No container_id specified"}, 400
+        # Accept either the new `id` (row id) or legacy `container_id` (backend name).
+        row_id = request.json.get("id")
+        container_id = request.json.get("container_id")
+        row = None
+        if row_id is not None:
+            try:
+                row = ContainerInfoModel.query.get(int(row_id))
+            except (ValueError, TypeError):
+                row = None
+        elif container_id is not None:
+            row = ContainerInfoModel.query.filter_by(container_id=container_id).first()
+        else:
+            return {"error": "No id or container_id specified"}, 400
 
-        return kill_container(request.json.get("container_id"))
+        if row is None:
+            return {"error": "Not found"}, 404
+        if row.container_id:
+            try:
+                container_manager.kill_container(row.container_id)
+            except ContainerException as err:
+                print(f"[CTFd] admin kill failed: {err}")
+        db.session.delete(row)
+        db.session.commit()
+        return {"success": "Container killed"}
 
     @containers_bp.route('/api/purge', methods=['POST'])
     @admins_only
     def route_purge_containers():
         containers: "list[ContainerInfoModel]" = ContainerInfoModel.query.all()
         for container in containers:
-            try:
-                kill_container(container.container_id)
-            except ContainerException:
-                pass
+            if container.container_id:
+                try:
+                    container_manager.kill_container(container.container_id)
+                except ContainerException as err:
+                    print(f"[CTFd] purge: kill_container({container.container_id}) failed: {err}")
+            db.session.delete(container)
+        db.session.commit()
         return {"success": "Purged all containers"}, 200
 
     @containers_bp.route('/api/images', methods=['GET'])
