@@ -22,8 +22,15 @@ from azure.mgmt.containerinstance.models import (
     ImageRegistryCredential,
     ContainerGroupIdentity,
     ResourceIdentityType,
+    UserAssignedIdentities,
 )
-from azure.containerregistry import ContainerRegistryClient
+from azure.containerregistry import ContainerRegistryClient, ArtifactTagOrder
+
+ACI_MIN_CPU = 0.1
+ACI_MAX_CPU = 4.0
+ACI_MIN_MEM_GB = 0.1
+ACI_MAX_MEM_GB = 16.0
+MAX_TAGS_PER_REPO = 20
 
 from CTFd.models import db
 from .models import ContainerInfoModel
@@ -186,13 +193,13 @@ class ACIContainerManager:
         try:
             mem_mb = int(self.settings.get("container_maxmemory") or 0)
             if mem_mb > 0:
-                memory_gb = max(0.1, mem_mb / 1024)
+                memory_gb = max(ACI_MIN_MEM_GB, min(ACI_MAX_MEM_GB, mem_mb / 1024))
         except ValueError:
             pass
         try:
             cpu_setting = float(self.settings.get("container_maxcpu") or 0)
             if cpu_setting > 0:
-                cpu = cpu_setting
+                cpu = max(ACI_MIN_CPU, min(ACI_MAX_CPU, cpu_setting))
         except ValueError:
             pass
 
@@ -209,7 +216,7 @@ class ACIContainerManager:
 
         identity = ContainerGroupIdentity(
             type=ResourceIdentityType.USER_ASSIGNED,
-            user_assigned_identities={uami: {}},
+            user_assigned_identities={uami: UserAssignedIdentities()},
         )
         image_registry_creds = []
         if login_server:
@@ -303,8 +310,15 @@ class ACIContainerManager:
             images = []
             for repo in registry.list_repository_names():
                 try:
-                    for tag in registry.list_tag_properties(repo):
+                    count = 0
+                    for tag in registry.list_tag_properties(
+                        repo,
+                        order_by=ArtifactTagOrder.LAST_UPDATED_ON_DESCENDING,
+                    ):
                         images.append(f"{login_server}/{repo}:{tag.name}")
+                        count += 1
+                        if count >= MAX_TAGS_PER_REPO:
+                            break
                 except Exception as e:
                     print(f"[CTFd-ACI] list_tag_properties({repo}) failed: {e}")
                     continue
