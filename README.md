@@ -68,29 +68,86 @@ The build context will be the `CTFd/` directory, so the `COPY` path is relative 
 
 ### 3. Wire it into `compose.yaml`
 
-Add a `build:` block to your existing `ctfd` service so it picks up the custom Dockerfile, and pass the Azure auth env vars through. A minimal stanza:
+The typical setup has two networks — `ctfd_frontend` (Caddy + CTFd, internet-egress) and `ctfd_backend` (DB + Redis, marked `internal: true` so the DB isn't reachable from the host network). **The CTFd service must attach to both** so it can reach the DB *and* reach `management.azure.com` for the ACI calls.
+
+**Replace** the pinned `image:` line in your existing `ctfd` service with a `build:` block (keep everything else — env vars, volumes, depends_on, networks). Before:
 
 ```yaml
-services:
+  ctfd:
+    image: ctfd/ctfd:3.8.4
+    # ... your existing env / volumes / depends_on / networks ...
+```
+
+After:
+
+```yaml
   ctfd:
     build:
       context: ./CTFd
       dockerfile: Dockerfile.ctfd
-    image: ctfd-with-containers:latest
+    image: ctfd-with-containers:latest   # tag for the locally-built image
     restart: unless-stopped
+    depends_on:
+      - db
+      - cache
+    networks:
+      - ctfd_frontend
+      - ctfd_backend
     environment:
-      # --- Existing CTFd env vars stay (SECRET_KEY, DATABASE_URL, REDIS_URL, etc.) ---
+      # --- Existing CTFd env vars stay as-is ---
+      UPLOAD_FOLDER: /var/uploads
+      LOG_FOLDER: /var/log/CTFd
+      DATABASE_URL: mysql+pymysql://ctfd:${MARIADB_PASSWORD}@db/ctfd
+      REDIS_URL: redis://cache:6379
+      WORKERS: "4"
+      ACCESS_LOG: "-"
+      ERROR_LOG: "-"
+      REVERSE_PROXY: "true"   # trust X-Forwarded-* from Caddy
 
-      # --- Azure SDK auth (skip these if CTFd runs on Azure with a managed identity) ---
-      AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
-      AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
-      AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
-    # --- For the Docker backend, mount the host's Docker socket instead ---
+      # --- Azure SDK auth — pick ONE of the two options below ---
+      #
+      # Option A (recommended when CTFd runs on an Azure VM): leave these unset and assign
+      # the VM a system-assigned managed identity with Contributor on the challenge RG +
+      # AcrPull on the ACR. DefaultAzureCredential picks up the VM's IMDS endpoint
+      # (169.254.169.254) automatically — no secrets in env vars.
+      #
+      # Option B (CTFd not on Azure, or you prefer an explicit service principal):
+      # AZURE_TENANT_ID: ${AZURE_TENANT_ID}
+      # AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
+      # AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET}
+    volumes:
+      - ctfd_logs:/var/log/CTFd
+      - ctfd_uploads:/var/uploads
+      - ./CTFd/.ctfd_secret_key:/opt/CTFd/.ctfd_secret_key:ro
+    # --- For the Docker backend (challenges run on this host), also mount the host's Docker socket ---
     # volumes:
     #   - /var/run/docker.sock:/var/run/docker.sock
 ```
 
-Then drop the values in `~/ctfd-stack/.env` next to `compose.yaml`:
+**Important:** the `.ctfd_secret_key` file mount must exist as a regular file on the host before `docker compose up`. If it doesn't, Docker creates an empty *directory* there and CTFd fails to start. Pre-create it once and let CTFd populate it on first boot:
+
+```bash
+touch ~/ctfd-stack/CTFd/.ctfd_secret_key
+chmod 600 ~/ctfd-stack/CTFd/.ctfd_secret_key
+```
+
+If you go with **Option A (managed identity on the VM)** — which is the natural fit when CTFd runs on an Azure VM:
+
+```bash
+# Enable system-assigned MI on the CTFd host VM (run on your workstation or in Cloud Shell)
+az vm identity assign -g <vm-rg> -n <vm-name>
+
+# Grab the principalId it printed and grant the roles it needs
+PRINCIPAL_ID=$(az vm show -g <vm-rg> -n <vm-name> --query identity.principalId -o tsv)
+az role assignment create --assignee "$PRINCIPAL_ID" \
+  --role "Contributor" \
+  --scope "/subscriptions/<sub>/resourceGroups/<challenge-rg>"
+az role assignment create --assignee "$PRINCIPAL_ID" \
+  --role "AcrPull" \
+  --scope "/subscriptions/<sub>/resourceGroups/<acr-rg>/providers/Microsoft.ContainerRegistry/registries/<acr-name>"
+```
+
+If you go with **Option B (service principal env vars)**, drop the values in `~/ctfd-stack/.env` next to `compose.yaml`:
 
 ```
 AZURE_TENANT_ID=00000000-0000-0000-0000-000000000000
@@ -98,11 +155,11 @@ AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000000
 AZURE_CLIENT_SECRET=...
 ```
 
-Lock it down: `chmod 600 .env` and make sure `.env` is in `.gitignore` if the directory is under version control.
+Lock it down: `chmod 600 .env` and add `.env` to `.gitignore`.
 
 ### 4. Caddy in front of CTFd
 
-If you're using the layout shown above, Caddy is your TLS terminator. A minimal `caddy/Caddyfile` looks like:
+If you're using `ghcr.io/caddybuilds/caddy-cloudflare:2-alpine` (Caddy with Cloudflare DNS-01 ACME) or any other Caddy build, **no changes are required for this plugin**. A typical `caddy/Caddyfile` is just:
 
 ```
 your-ctfd.example.com {
@@ -110,7 +167,9 @@ your-ctfd.example.com {
 }
 ```
 
-The CTFd service listens on port 8000 inside its container; expose only Caddy on `:443`/`:80` to the public. With the async refactor in this plugin, the `POST /containers/api/request` returns in under a second (HTTP 202) and `GET /containers/api/status/<id>` is also fast — so the default Caddy/reverse-proxy timeouts are fine. No timeout bumps required.
+(plus your `tls { dns cloudflare {env.CF_API_TOKEN} }` block if you're using DNS-01.)
+
+The CTFd service listens on port 8000 inside its container; expose only Caddy on `:443`/`:80` to the public. With the async refactor in this plugin, `POST /containers/api/request` returns in under a second (HTTP 202) and `GET /containers/api/status/<id>` is also fast — so the default Caddy and Cloudflare timeouts are fine. **No timeout bumps required**, including behind Cloudflare's 100s edge limit.
 
 ### 5. Build and start
 
