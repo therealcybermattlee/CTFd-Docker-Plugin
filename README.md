@@ -18,6 +18,157 @@ When a user clicks on a container challenge, a button labeled "Get Connection In
 
 A note, we used hidden teams as non-school teams in PCTF 2022 so if you want them to count for decreasing the dynamic challenge points, you need to remove the `Model.hidden == False,` line from the `calculate_value` function in `__init__.py`.
 
+## Deployment on Linux with Docker Compose
+
+This recipe matches a common self-hosted layout: a top-level directory holding `compose.yaml`, the CTFd source tree, and a Caddy reverse-proxy directory side-by-side:
+
+```
+~/ctfd-stack/
+├── compose.yaml
+├── CTFd/                  ← cloned from github.com/CTFd/CTFd
+│   ├── Dockerfile         ← upstream
+│   ├── Dockerfile.ctfd    ← you'll add this
+│   └── CTFd/
+│       └── plugins/
+│           └── containers/  ← this plugin lives here
+└── caddy/
+    ├── Caddyfile
+    └── data/, config/
+```
+
+Adapt to your own paths. Docker Engine 24+ with the `docker compose` v2 plugin is assumed.
+
+### 1. Clone CTFd and the plugin
+
+The plugin directory **must** be named exactly `containers` — that's where the URL prefix `/containers` is registered.
+
+```bash
+cd ~/ctfd-stack
+
+git clone https://github.com/CTFd/CTFd.git
+git clone https://github.com/therealcybermattlee/CTFd-Docker-Plugin.git \
+  CTFd/CTFd/plugins/containers
+```
+
+After this you should have `~/ctfd-stack/CTFd/CTFd/plugins/containers/__init__.py`.
+
+### 2. Custom Dockerfile that installs the plugin's Python deps
+
+The stock `ctfd/ctfd` image doesn't include `azure-identity`, `azure-mgmt-containerinstance`, or `azure-containerregistry`. Create `~/ctfd-stack/CTFd/Dockerfile.ctfd`:
+
+```dockerfile
+FROM ctfd/ctfd:latest
+USER root
+COPY CTFd/plugins/containers/requirements.txt /tmp/plugin-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/plugin-requirements.txt
+USER 1001
+```
+
+The build context will be the `CTFd/` directory, so the `COPY` path is relative to that.
+
+### 3. Wire it into `compose.yaml`
+
+Add a `build:` block to your existing `ctfd` service so it picks up the custom Dockerfile, and pass the Azure auth env vars through. A minimal stanza:
+
+```yaml
+services:
+  ctfd:
+    build:
+      context: ./CTFd
+      dockerfile: Dockerfile.ctfd
+    image: ctfd-with-containers:latest
+    restart: unless-stopped
+    environment:
+      # --- Existing CTFd env vars stay (SECRET_KEY, DATABASE_URL, REDIS_URL, etc.) ---
+
+      # --- Azure SDK auth (skip these if CTFd runs on Azure with a managed identity) ---
+      AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
+      AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
+      AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
+    # --- For the Docker backend, mount the host's Docker socket instead ---
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
+```
+
+Then drop the values in `~/ctfd-stack/.env` next to `compose.yaml`:
+
+```
+AZURE_TENANT_ID=00000000-0000-0000-0000-000000000000
+AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000000
+AZURE_CLIENT_SECRET=...
+```
+
+Lock it down: `chmod 600 .env` and make sure `.env` is in `.gitignore` if the directory is under version control.
+
+### 4. Caddy in front of CTFd
+
+If you're using the layout shown above, Caddy is your TLS terminator. A minimal `caddy/Caddyfile` looks like:
+
+```
+your-ctfd.example.com {
+    reverse_proxy ctfd:8000
+}
+```
+
+The CTFd service listens on port 8000 inside its container; expose only Caddy on `:443`/`:80` to the public. With the async refactor in this plugin, the `POST /containers/api/request` returns in under a second (HTTP 202) and `GET /containers/api/status/<id>` is also fast — so the default Caddy/reverse-proxy timeouts are fine. No timeout bumps required.
+
+### 5. Build and start
+
+```bash
+cd ~/ctfd-stack
+docker compose build ctfd
+docker compose up -d
+```
+
+Confirm the plugin loaded:
+
+```bash
+docker compose logs -f ctfd | head -50
+```
+
+You shouldn't see `ImportError` or `ModuleNotFoundError`. Hit `https://your-ctfd.example.com/admin` and look for **Plugins → Containers** in the navbar dropdown.
+
+### 6. If you previously had the upstream plugin installed, drop its tables
+
+This fork's schema is incompatible with upstream (user mode instead of team mode, `hostname` column, async status columns, unique constraint on `(challenge_id, user_id)`). On a brand-new database this step is a no-op. On an upgrade, drop the tables once so SQLAlchemy can recreate them on next start:
+
+```bash
+# MariaDB / MySQL — service name and creds must match your compose.yaml
+docker compose exec db mariadb -uctfd -pctfd ctfd \
+  -e "DROP TABLE IF EXISTS container_info; DROP TABLE IF EXISTS container_settings;"
+```
+
+Restart CTFd: `docker compose restart ctfd`.
+
+### 7. Configure via the admin UI
+
+1. Browse to `https://your-ctfd.example.com/admin` and log in.
+2. **Plugins → Containers → Settings**.
+3. Set **Backend** to **Azure Container Instances** and fill the Azure fields (Subscription ID, Resource Group, Region, UAMI Resource ID, ACR Login Server, DNS prefix). See [Plugin settings](#plugin-settings) below for what each field means.
+4. Save. The dashboard badge flips to **Docker Connected** (green) — the label still says "Docker" but it's the same connection check.
+5. **Admin → Challenges → New Challenge → container** to create your first challenge. The Image dropdown is populated from your ACR (CTFd's identity needs `AcrPull`).
+
+### 8. Verify end-to-end
+
+As a normal player (not admin), open the challenge and click **Get Connection Info**. You should see `Provisioning…` for ~30-60s, then a `hostname:port` line. From the host shell, confirm the container group exists:
+
+```bash
+az container list -g <your-rg> -o table
+```
+
+Click **Stop** in the UI and watch the container group disappear within ~30s.
+
+### Updating the plugin later
+
+```bash
+cd ~/ctfd-stack/CTFd/CTFd/plugins/containers
+git pull
+cd ~/ctfd-stack
+docker compose build ctfd && docker compose up -d ctfd
+```
+
+If a future update introduces new schema columns, you'll see startup errors mentioning unknown columns — drop the affected tables (step 6) and CTFd recreates them.
+
 ## Azure Container Instances backend
 
 This fork supports running challenge containers on **Azure Container Instances (ACI)** instead of (or alongside) a Docker daemon. Pick **Azure Container Instances** under Backend on the settings page to switch.
