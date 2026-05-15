@@ -2,7 +2,7 @@
 {% block content %}
 <div class="jumbotron">
 	<div class="container">
-		<h1>Docker Config</h1>
+		<h1>Container Backend Config</h1>
 	</div>
 </div>
 <div class="container">
@@ -16,69 +16,130 @@
 	{% endif %}
 	{% endwith %}
 	<div class="row">
-		<div class="col-md-6 offset-md-3">
+		<div class="col-md-8 offset-md-2">
 			<form method="post" action="/containers/api/settings/update" accept-charset="utf-8" autocomplete="off"
 				role="form" class="form-horizontal" enctype="multipart/form-data">
+
 				<div class="form-group">
-					<label for="docker_base_url">
-						Base URL (see instructions)
-					</label>
-					<input class="form-control" type="text" name="docker_base_url" id="docker_base_url"
-						placeholder="E.g. unix://var/run/docker.sock or ssh://root@example.com"
-						value='{{ settings.docker_base_url|default("") }}' />
+					<label for="backend"><strong>Backend</strong></label>
+					<select class="form-control" name="backend" id="backend">
+						<option value="docker" {% if settings.backend != "aci" %}selected{% endif %}>Docker (local socket or SSH)</option>
+						<option value="aci" {% if settings.backend == "aci" %}selected{% endif %}>Azure Container Instances</option>
+					</select>
 				</div>
-				<div class="form-group">
-					<label for="docker_hostname">
-						Hostname for Docker Host (this is what's displayed to the user in the connection string)
-					</label>
-					<input class="form-control" type="text" name="docker_hostname" id="docker_hostname"
-						placeholder="e.g. example.com or 10.0.1.8" value='{{ settings.docker_hostname|default("") }}' />
-				</div>
-				<div class="form-group">
-					<label for="container_expiration">
-						Container Expiration in Minutes (how long a container will last before it's killed; 0 = never)
-					</label>
-					<input class="form-control" type="text" name="container_expiration" id="container_expiration"
-						placeholder="e.g. 30" value='{{ settings.container_expiration|default("") }}' />
-				</div>
-				<div class="form-group">
-					<label for="container_maxmemory">
-						Maximum per-container memory usage (in MB)
-					</label>
-					<input class="form-control" type="number" name="container_maxmemory" id="container_maxmemory"
-						placeholder="e.g. 1000" value='{{ settings.container_maxmemory|default("") }}' />
-				</div>
-				<div class="form-group">
-					<label for="container_maxcpu">
-						Maximum per-container CPUs (float, e.g 1.5 means 1.5 cores at most)
-					</label>
-					<input class="form-control" type="text" name="container_maxcpu" id="container_maxcpu"
-						placeholder="e.g. 1.5" value='{{ settings.container_maxcpu|default("") }}' />
-				</div>
+
+				<fieldset id="backend-docker-fields">
+					<legend>Docker Settings</legend>
+					<div class="form-group">
+						<label for="docker_base_url">Base URL</label>
+						<input class="form-control" type="text" name="docker_base_url" id="docker_base_url"
+							placeholder="E.g. unix://var/run/docker.sock or ssh://root@example.com"
+							value='{{ settings.docker_base_url|default("") }}' />
+					</div>
+					<div class="form-group">
+						<label for="docker_hostname">Hostname displayed to users</label>
+						<input class="form-control" type="text" name="docker_hostname" id="docker_hostname"
+							placeholder="e.g. example.com or 10.0.1.8" value='{{ settings.docker_hostname|default("") }}' />
+					</div>
+				</fieldset>
+
+				<fieldset id="backend-aci-fields">
+					<legend>Azure Container Instances</legend>
+					<p class="text-muted small">
+						CTFd authenticates to Azure via <code>DefaultAzureCredential</code>
+						(Managed Identity when running on Azure, or
+						<code>AZURE_TENANT_ID</code>/<code>AZURE_CLIENT_ID</code>/<code>AZURE_CLIENT_SECRET</code>
+						env vars for a service principal). The CTFd identity needs
+						<strong>Contributor</strong> on the target resource group and
+						<strong>AcrPull</strong> on the ACR. The UAMI below is attached
+						to each spawned container group and pulls private images on its
+						behalf — it needs <strong>AcrPull</strong> on the ACR.
+					</p>
+					<div class="form-group">
+						<label for="azure_subscription_id">Azure Subscription ID</label>
+						<input class="form-control" type="text" name="azure_subscription_id" id="azure_subscription_id"
+							placeholder="00000000-0000-0000-0000-000000000000"
+							value='{{ settings.azure_subscription_id|default("") }}' />
+					</div>
+					<div class="form-group">
+						<label for="azure_resource_group">Resource Group (where container groups will be created)</label>
+						<input class="form-control" type="text" name="azure_resource_group" id="azure_resource_group"
+							placeholder="ctfd-challenges"
+							value='{{ settings.azure_resource_group|default("") }}' />
+					</div>
+					<div class="form-group">
+						<label for="azure_region">Region</label>
+						<input class="form-control" type="text" name="azure_region" id="azure_region"
+							placeholder="eastus" value='{{ settings.azure_region|default("") }}' />
+					</div>
+					<div class="form-group">
+						<label for="azure_uami_resource_id">User-Assigned Managed Identity Resource ID</label>
+						<input class="form-control" type="text" name="azure_uami_resource_id" id="azure_uami_resource_id"
+							placeholder="/subscriptions/.../userAssignedIdentities/ctfd-puller"
+							value='{{ settings.azure_uami_resource_id|default("") }}' />
+					</div>
+					<div class="form-group">
+						<label for="azure_dns_label_prefix">DNS Label Prefix</label>
+						<input class="form-control" type="text" name="azure_dns_label_prefix" id="azure_dns_label_prefix"
+							placeholder="ctfd"
+							value='{{ settings.azure_dns_label_prefix|default("ctfd") }}' />
+						<small class="text-muted">Containers get DNS like
+							<code>&lt;prefix&gt;-&lt;random&gt;.&lt;region&gt;.azurecontainer.io</code></small>
+					</div>
+					<div class="form-group">
+						<label for="acr_login_server">ACR Login Server</label>
+						<input class="form-control" type="text" name="acr_login_server" id="acr_login_server"
+							placeholder="myregistry.azurecr.io"
+							value='{{ settings.acr_login_server|default("") }}' />
+					</div>
+				</fieldset>
+
+				<fieldset>
+					<legend>Resource Limits</legend>
+					<div class="form-group">
+						<label for="container_expiration">Container Expiration (minutes; 0 = never)</label>
+						<input class="form-control" type="text" name="container_expiration" id="container_expiration"
+							placeholder="e.g. 30" value='{{ settings.container_expiration|default("") }}' />
+					</div>
+					<div class="form-group">
+						<label for="container_maxmemory">Maximum per-container memory (MB)</label>
+						<input class="form-control" type="number" name="container_maxmemory" id="container_maxmemory"
+							placeholder="e.g. 1000" value='{{ settings.container_maxmemory|default("") }}' />
+					</div>
+					<div class="form-group">
+						<label for="container_maxcpu">Maximum per-container CPUs (float)</label>
+						<input class="form-control" type="text" name="container_maxcpu" id="container_maxcpu"
+							placeholder="e.g. 1.5" value='{{ settings.container_maxcpu|default("") }}' />
+					</div>
+				</fieldset>
+
 				<div class="col-md-13 text-center">
 					<button type="submit" tabindex="0" class="btn btn-md btn-success btn-outlined">
 						Submit
 					</button>
 					<a class="btn btn-danger" href="{{ url_for('.route_containers_dashboard') }}">Cancel</a>
 				</div>
+				<input type="hidden" name="nonce" value="{{ Session.nonce }}">
+			</form>
 		</div>
-		<input type="hidden" name="nonce" value="{{ Session.nonce }}">
-		</form>
 	</div>
-	<h3>Instructions</h3>
-	<p>
-		The Base URL should be the local socket address of the Docker daemon, i.e.
-		<code>unix://var/run/docker.sock</code>, or it can be a remote SSH address, e.g.
-		<code>ssh://root@example.com</code>. In either case, sudo will not be executed. For a local socket, the user
-		CTFd is running as should have permissions for Docker; for SSH connections, the SSH user in the Base URL should
-		be root or have Docker permissions.
-	</p>
 </div>
 {% endblock content %}
 {% block scripts %}
 <script>
+	(function () {
+		var backend = document.getElementById("backend");
+		var dockerFields = document.getElementById("backend-docker-fields");
+		var aciFields = document.getElementById("backend-aci-fields");
 
+		function applyBackend() {
+			var isAci = backend.value === "aci";
+			dockerFields.style.display = isAci ? "none" : "";
+			aciFields.style.display = isAci ? "" : "none";
+		}
 
-
+		backend.addEventListener("change", applyBackend);
+		applyBackend();
+	})();
 </script>
 {% endblock scripts %}

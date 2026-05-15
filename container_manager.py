@@ -222,3 +222,11 @@ class ContainerManager:
         except:
             return False
         return True
+
+    def shutdown(self) -> None:
+        try:
+            scheduler = getattr(self, "expiration_scheduler", None)
+            if scheduler is not None:
+                scheduler.shutdown(wait=False)
+        except (SchedulerNotRunningError, AttributeError):
+            pass

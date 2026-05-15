@@ -1,3 +1,6 @@
 docker
 paramiko
 apscheduler
+azure-identity
+azure-mgmt-containerinstance
+azure-containerregistry

@@ -35,6 +35,7 @@ class ContainerInfoModel(db.Model):
         db.Integer, db.ForeignKey("users.id", ondelete="CASCADE")
     )
     port = db.Column(db.Integer)
+    hostname = db.Column(db.String(512), nullable=True)
     timestamp = db.Column(db.Integer)
     expires = db.Column(db.Integer)
     user = relationship("Users", foreign_keys=[user_id])

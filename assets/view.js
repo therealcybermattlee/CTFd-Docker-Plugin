@@ -62,7 +62,9 @@ function container_request(challenge_id) {
 	);
 	var requestError = document.getElementById("container-request-error");
 
+	var originalLabel = requestButton.innerHTML;
 	requestButton.setAttribute("disabled", "disabled");
+	requestButton.innerHTML = "Provisioning… (may take up to a minute)";
 
 	var xhr = new XMLHttpRequest();
 	xhr.open("POST", path, true);
@@ -76,11 +78,13 @@ function container_request(challenge_id) {
 			// Container error
 			requestError.style.display = "";
 			requestError.firstElementChild.innerHTML = data.error;
+			requestButton.innerHTML = originalLabel;
 			requestButton.removeAttribute("disabled");
 		} else if (data.message !== undefined) {
 			// CTFd error
 			requestError.style.display = "";
 			requestError.firstElementChild.innerHTML = data.message;
+			requestButton.innerHTML = originalLabel;
 			requestButton.removeAttribute("disabled");
 		} else {
 			// Success
@@ -111,7 +115,9 @@ function container_reset(challenge_id) {
 	var connectionInfo = document.getElementById("container-connection-info");
 	var requestError = document.getElementById("container-request-error");
 
+	var originalLabel = resetButton.innerHTML;
 	resetButton.setAttribute("disabled", "disabled");
+	resetButton.innerHTML = "Provisioning…";
 
 	var xhr = new XMLHttpRequest();
 	xhr.open("POST", path, true);
@@ -121,6 +127,7 @@ function container_reset(challenge_id) {
 	xhr.send(JSON.stringify({ chal_id: challenge_id }));
 	xhr.onload = function () {
 		var data = JSON.parse(this.responseText);
+		resetButton.innerHTML = originalLabel;
 		if (data.error !== undefined) {
 			// Container rrror
 			requestError.style.display = "";

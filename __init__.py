@@ -16,6 +16,13 @@ from CTFd.utils.modes import get_model
 
 from .models import ContainerChallengeModel, ContainerInfoModel, ContainerSettingsModel
 from .container_manager import ContainerManager, ContainerException
+from .container_manager_aci import ACIContainerManager
+
+
+def make_container_manager(settings, app):
+    if settings.get("backend", "docker") == "aci":
+        return ACIContainerManager(settings, app)
+    return ContainerManager(settings, app)
 
 
 class ContainerChallenge(BaseChallenge):
@@ -145,7 +152,7 @@ def load(app: Flask):
     )
 
     container_settings = settings_to_dict(ContainerSettingsModel.query.all())
-    container_manager = ContainerManager(container_settings, app)
+    container_manager = make_container_manager(container_settings, app)
 
     containers_bp = Blueprint(
         'containers', __name__, template_folder='templates', static_folder='assets', url_prefix='/containers')
@@ -165,9 +172,9 @@ def load(app: Flask):
         except ContainerException:
             return {"error": "Docker is not initialized. Please check your settings."}
 
-        db.session.delete(container)
-
-        db.session.commit()
+        if container is not None:
+            db.session.delete(container)
+            db.session.commit()
         return {"success": "Container killed"}
 
     def renew_container(chal_id, user_id):
@@ -217,7 +224,7 @@ def load(app: Flask):
                         running_container.container_id):
                     return json.dumps({
                         "status": "already_running",
-                        "hostname": container_manager.settings.get("docker_hostname", ""),
+                        "hostname": running_container.hostname or container_manager.settings.get("docker_hostname", ""),
                         "port": running_container.port,
                         "expires": running_container.expires
                     })
@@ -256,6 +263,7 @@ def load(app: Flask):
             challenge_id=challenge.id,
             user_id=user_id,
             port=port,
+            hostname=getattr(created_container, "hostname", None),
             timestamp=int(time.time()),
             expires=expires
         )
@@ -264,7 +272,7 @@ def load(app: Flask):
 
         return json.dumps({
             "status": "created",
-            "hostname": container_manager.settings.get("docker_hostname", ""),
+            "hostname": new_container.hostname or container_manager.settings.get("docker_hostname", ""),
             "port": port,
             "expires": expires
         })
@@ -402,99 +410,50 @@ def load(app: Flask):
     @containers_bp.route('/api/settings/update', methods=['POST'])
     @admins_only
     def route_update_settings():
-        if request.form.get("docker_base_url") is None:
-            return {"error": "Invalid request"}, 400
+        nonlocal container_manager
 
-        if request.form.get("docker_hostname") is None:
-            return {"error": "Invalid request"}, 400
+        settable_keys = (
+            "backend",
+            "docker_base_url",
+            "docker_hostname",
+            "container_expiration",
+            "container_maxmemory",
+            "container_maxcpu",
+            "azure_subscription_id",
+            "azure_resource_group",
+            "azure_region",
+            "azure_uami_resource_id",
+            "azure_dns_label_prefix",
+            "acr_login_server",
+        )
 
-        if request.form.get("container_expiration") is None:
-            return {"error": "Invalid request"}, 400
-
-        if request.form.get("container_maxmemory") is None:
-            return {"error": "Invalid request"}, 400
-
-        if request.form.get("container_maxcpu") is None:
-            return {"error": "Invalid request"}, 400
-
-        docker_base_url = ContainerSettingsModel.query.filter_by(
-            key="docker_base_url").first()
-
-        docker_hostname = ContainerSettingsModel.query.filter_by(
-            key="docker_hostname").first()
-
-        container_expiration = ContainerSettingsModel.query.filter_by(
-            key="container_expiration").first()
-
-        container_maxmemory = ContainerSettingsModel.query.filter_by(
-            key="container_maxmemory").first()
-
-        container_maxcpu = ContainerSettingsModel.query.filter_by(
-            key="container_maxcpu").first()
-
-        # Create or update
-        if docker_base_url is None:
-            # Create
-            docker_base_url = ContainerSettingsModel(
-                key="docker_base_url", value=request.form.get("docker_base_url"))
-            db.session.add(docker_base_url)
-        else:
-            # Update
-            docker_base_url.value = request.form.get("docker_base_url")
-
-        # Create or update
-        if docker_hostname is None:
-            # Create
-            docker_hostname = ContainerSettingsModel(
-                key="docker_hostname", value=request.form.get("docker_hostname"))
-            db.session.add(docker_hostname)
-        else:
-            # Update
-            docker_hostname.value = request.form.get("docker_hostname")
-
-        # Create or update
-        if container_expiration is None:
-            # Create
-            container_expiration = ContainerSettingsModel(
-                key="container_expiration", value=request.form.get("container_expiration"))
-            db.session.add(container_expiration)
-        else:
-            # Update
-            container_expiration.value = request.form.get(
-                "container_expiration")
-
-        # Create or update
-        if container_maxmemory is None:
-            # Create
-            container_maxmemory = ContainerSettingsModel(
-                key="container_maxmemory", value=request.form.get("container_maxmemory"))
-            db.session.add(container_maxmemory)
-        else:
-            # Update
-            container_maxmemory.value = request.form.get("container_maxmemory")
-
-        # Create or update
-        if container_maxcpu is None:
-            # Create
-            container_maxcpu = ContainerSettingsModel(
-                key="container_maxcpu", value=request.form.get("container_maxcpu"))
-            db.session.add(container_maxcpu)
-        else:
-            # Update
-            container_maxcpu.value = request.form.get("container_maxcpu")
+        for key in settable_keys:
+            value = request.form.get(key)
+            if value is None:
+                continue
+            row = ContainerSettingsModel.query.filter_by(key=key).first()
+            if row is None:
+                db.session.add(ContainerSettingsModel(key=key, value=value))
+            else:
+                row.value = value
 
         db.session.commit()
 
-        container_manager.settings = settings_to_dict(
-            ContainerSettingsModel.query.all())
+        # Cleanly shut down the previous manager (stops its expiration scheduler)
+        # before replacing it, so we don't leak duplicate sweepers on every save.
+        try:
+            container_manager.shutdown()
+        except Exception as err:
+            print(f"[CTFd] previous manager shutdown failed: {err}")
 
-        if container_manager.settings.get("docker_base_url") is not None:
-            try:
-                container_manager.initialize_connection(
-                    container_manager.settings, app)
-            except ContainerException as err:
-                flash(str(err), "error")
-                return redirect(url_for(".route_containers_settings"))
+        new_settings = settings_to_dict(ContainerSettingsModel.query.all())
+        container_manager = make_container_manager(new_settings, app)
+
+        try:
+            container_manager.initialize_connection(new_settings, app)
+        except ContainerException as err:
+            flash(str(err), "error")
+            return redirect(url_for(".route_containers_settings"))
 
         return redirect(url_for(".route_containers_dashboard"))
 
