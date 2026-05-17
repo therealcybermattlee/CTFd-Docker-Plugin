@@ -646,7 +646,7 @@ def load(app: Flask):
             except ContainerException:
                 running_containers[i].is_running = False
 
-        backend = settings.get("backend", "docker")
+        backend = container_manager.settings.get("backend", "docker")
         backend_label = "Azure Container Instances" if backend == "aci" else "Docker"
 
         return render_template(
