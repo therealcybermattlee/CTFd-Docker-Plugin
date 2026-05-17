@@ -1,4 +1,5 @@
 import atexit
+import re
 import shlex
 import time
 import uuid
@@ -178,7 +179,7 @@ class ACIContainerManager:
             if deleted:
                 db.session.commit()
 
-    def create_container(self, image: str, port: int, command: str, volumes: str):
+    def create_container(self, image: str, port: int, command: str, volumes: str, owner: str = None):
         if self.client is None:
             raise ContainerException("ACI client is not initialized")
 
@@ -206,8 +207,14 @@ class ACIContainerManager:
             pass
         cpu = round(cpu * 100) / 100
 
-        unique = uuid.uuid4().hex[:8]
-        group_name = f"{dns_prefix}-{unique}"[:63].rstrip("-")
+        unique = uuid.uuid4().hex[:4]
+        if owner:
+            slug = re.sub(r"[^a-z0-9-]+", "-", owner.lower()).strip("-")
+            slug = re.sub(r"-{2,}", "-", slug) or "user"
+            group_name = f"{dns_prefix}-{slug}-{unique}"
+        else:
+            group_name = f"{dns_prefix}-{uuid.uuid4().hex[:8]}"
+        group_name = group_name[:63].rstrip("-")
         dns_label = group_name
 
         command_list = None

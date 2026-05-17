@@ -144,7 +144,7 @@ class ContainerManager:
         return container[0].status == "running"
 
     @run_command
-    def create_container(self, image: str, port: int, command: str, volumes: str):
+    def create_container(self, image: str, port: int, command: str, volumes: str, owner: str = None):
         kwargs = {}
 
         # Set the memory and CPU limits for the container

@@ -165,6 +165,21 @@ class ContainerChallenge(BaseChallenge):
 
         ContainerChallenge.calculate_value(challenge)
 
+        # Tear down the player's container for this challenge — it's served
+        # its purpose and we don't want to keep paying ACI for it.
+        manager = getattr(cls, "container_manager", None)
+        if manager is not None and user is not None:
+            info = ContainerInfoModel.query.filter_by(
+                challenge_id=challenge.id, user_id=user.id).first()
+            if info is not None:
+                if info.container_id:
+                    try:
+                        manager.kill_container(info.container_id)
+                    except ContainerException as e:
+                        print(f"[CTFd] solve cleanup kill failed for {info.container_id}: {e}")
+                db.session.delete(info)
+                db.session.commit()
+
 
 def settings_to_dict(settings):
     return {
@@ -181,6 +196,8 @@ def load(app: Flask):
 
     container_settings = settings_to_dict(ContainerSettingsModel.query.all())
     container_manager = make_container_manager(container_settings, app)
+    # Make the manager available to ContainerChallenge classmethods (e.g. solve()).
+    ContainerChallenge.container_manager = container_manager
 
     containers_bp = Blueprint(
         'containers', __name__, template_folder='templates', static_folder='assets', url_prefix='/containers')
@@ -239,12 +256,12 @@ def load(app: Flask):
             "expires": row.expires,
         }
 
-    def _provision_async(manager, row_id, image, internal_port, command, volumes, expiration_seconds):
+    def _provision_async(manager, row_id, image, internal_port, command, volumes, expiration_seconds, owner=None):
         with app.app_context():
             if ContainerInfoModel.query.get(row_id) is None:
                 return
             try:
-                created = manager.create_container(image, internal_port, command, volumes)
+                created = manager.create_container(image, internal_port, command, volumes, owner=owner)
             except ContainerException as e:
                 row = ContainerInfoModel.query.get(row_id)
                 if row is not None:
@@ -293,7 +310,7 @@ def load(app: Flask):
             row.error_message = None
             db.session.commit()
 
-    def _spawn_new(challenge, user_id):
+    def _spawn_new(challenge, user_id, user_name=None):
         now = int(time.time())
         initial_expires = now + (container_manager.expiration_seconds or 3600)
         row = ContainerInfoModel(
@@ -321,6 +338,7 @@ def load(app: Flask):
             args=(container_manager, row.id, challenge.image, challenge.port,
                   challenge.command, challenge.volumes,
                   container_manager.expiration_seconds),
+            kwargs={"owner": user_name},
             daemon=True,
         ).start()
 
@@ -365,7 +383,7 @@ def load(app: Flask):
                 db.session.delete(existing)
                 db.session.commit()
 
-        return _spawn_new(challenge, user.id)
+        return _spawn_new(challenge, user.id, user_name=user.name)
 
     @containers_bp.route('/api/status/<int:row_id>', methods=['GET'])
     @authed_only
@@ -470,7 +488,7 @@ def load(app: Flask):
             db.session.delete(existing)
             db.session.commit()
 
-        return _spawn_new(challenge, user.id)
+        return _spawn_new(challenge, user.id, user_name=user.name)
 
     @containers_bp.route('/api/stop', methods=['POST'])
     @authed_only
