@@ -1,12 +1,32 @@
 CTFd._internal.challenge.data = undefined;
 
+function _container_get_renderer() {
+	var md = CTFd && CTFd.lib && CTFd.lib.markdown;
+	if (typeof md === "function") {
+		// Older API: CTFd.lib.markdown() returns a renderer
+		try { return md(); } catch (e) { /* fall through */ }
+	}
+	if (md && typeof md.render === "function") {
+		// Newer API: CTFd.lib.markdown IS the renderer
+		return md;
+	}
+	// Fallback: escape text and wrap in <p>
+	return {
+		render: function (text) {
+			var div = document.createElement("div");
+			div.textContent = text == null ? "" : String(text);
+			return "<p>" + div.innerHTML + "</p>";
+		},
+	};
+}
+
 CTFd._internal.challenge.preRender = function () {
-	CTFd._internal.challenge.renderer = CTFd.lib.markdown();
+	CTFd._internal.challenge.renderer = _container_get_renderer();
 };
 
 CTFd._internal.challenge.render = function (markdown) {
 	if (!CTFd._internal.challenge.renderer) {
-		CTFd._internal.challenge.renderer = CTFd.lib.markdown();
+		CTFd._internal.challenge.renderer = _container_get_renderer();
 	}
 	return CTFd._internal.challenge.renderer.render(markdown);
 };
