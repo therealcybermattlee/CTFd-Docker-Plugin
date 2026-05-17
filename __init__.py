@@ -4,7 +4,26 @@ import time
 import json
 import datetime
 import math
+import os
+import hashlib
 import threading
+
+
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _asset_version(relpath):
+    full = os.path.join(_PLUGIN_DIR, relpath)
+    try:
+        with open(full, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:8]
+    except OSError:
+        return str(int(time.time()))
+
+
+def _versioned(path):
+    rel = path.split("/plugins/containers/assets/", 1)[-1]
+    return f"{path}?v={_asset_version(os.path.join('assets', rel))}"
 
 from flask import Blueprint, request, Flask, render_template, url_for, redirect, flash
 from sqlalchemy.exc import IntegrityError
@@ -36,9 +55,9 @@ class ContainerChallenge(BaseChallenge):
         "view": "/plugins/containers/assets/view.html",
     }
     scripts = {  # Scripts that are loaded when a template is loaded
-        "create": "/plugins/containers/assets/create.js",
-        "update": "/plugins/containers/assets/update.js",
-        "view": "/plugins/containers/assets/view.js",
+        "create": _versioned("/plugins/containers/assets/create.js"),
+        "update": _versioned("/plugins/containers/assets/update.js"),
+        "view": _versioned("/plugins/containers/assets/view.js"),
     }
     # Route at which files are accessible. This must be registered using register_plugin_assets_directory()
     route = "/plugins/containers/assets/"
