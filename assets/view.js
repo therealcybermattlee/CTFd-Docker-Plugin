@@ -31,7 +31,56 @@ CTFd._internal.challenge.render = function (markdown) {
 	return CTFd._internal.challenge.renderer.render(markdown);
 };
 
-CTFd._internal.challenge.postRender = function () {};
+function _container_inject_controls() {
+	var modal = document.getElementById("challenge-window") || document.querySelector('[role="dialog"]');
+	if (!modal) return;
+	if (modal.querySelector("#container-request-btn") || modal.querySelector("#container-request-result")) {
+		return; // already injected
+	}
+	var descSpan = modal.querySelector(".challenge-desc");
+	if (!descSpan) return;
+
+	var idInput = modal.querySelector("#challenge-id");
+	var challengeId = idInput ? parseInt(idInput.value, 10) : NaN;
+	if (!challengeId) return;
+
+	var wrap = document.createElement("div");
+	wrap.className = "container-challenge-controls text-center my-3";
+	wrap.innerHTML = [
+		'<button type="button" class="btn btn-success" id="container-request-btn">Get Connection Info</button>',
+		'<div id="container-request-result" style="display: none;">',
+		'  <p><code id="container-connection-info"></code></p>',
+		'  <p>Expires in <span id="container-expires"></span> minutes (<span id="container-expires-time"></span>)</p>',
+		'  <p>',
+		'    <button type="button" class="btn btn-info" id="container-reset-btn">Reset</button>',
+		'    <button type="button" class="btn btn-info" id="container-stop-btn">Stop</button>',
+		'    <button type="button" class="btn btn-info" id="container-renew-btn">Add Time</button>',
+		'  </p>',
+		'</div>',
+		'<div id="container-request-error" class="alert alert-danger mt-2" role="alert" style="display: none;">',
+		'  <strong id="result-message">Error</strong>',
+		'</div>',
+	].join("\n");
+	descSpan.parentNode.insertBefore(wrap, descSpan.nextSibling);
+
+	wrap.querySelector("#container-request-btn").addEventListener("click", function () {
+		container_request(challengeId);
+	});
+	wrap.querySelector("#container-reset-btn").addEventListener("click", function () {
+		container_reset(challengeId);
+	});
+	wrap.querySelector("#container-stop-btn").addEventListener("click", function () {
+		container_stop(challengeId);
+	});
+	wrap.querySelector("#container-renew-btn").addEventListener("click", function () {
+		container_renew(challengeId);
+	});
+}
+
+CTFd._internal.challenge.postRender = function () {
+	// Defer one tick so Alpine has finished swapping in $store.challenge.data.view
+	setTimeout(_container_inject_controls, 0);
+};
 
 CTFd._internal.challenge.submit = function (preview) {
 	var challenge_id = parseInt(CTFd.lib.$("#challenge-id").val());
