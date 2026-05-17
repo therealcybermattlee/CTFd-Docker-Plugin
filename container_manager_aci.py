@@ -196,12 +196,15 @@ class ACIContainerManager:
                 memory_gb = max(ACI_MIN_MEM_GB, min(ACI_MAX_MEM_GB, mem_mb / 1024))
         except ValueError:
             pass
+        # ACI requires memory to be in 0.1 GB increments and CPU in 0.01 increments.
+        memory_gb = round(memory_gb * 10) / 10
         try:
             cpu_setting = float(self.settings.get("container_maxcpu") or 0)
             if cpu_setting > 0:
                 cpu = max(ACI_MIN_CPU, min(ACI_MAX_CPU, cpu_setting))
         except ValueError:
             pass
+        cpu = round(cpu * 100) / 100
 
         unique = uuid.uuid4().hex[:8]
         group_name = f"{dns_prefix}-{unique}"[:63].rstrip("-")
