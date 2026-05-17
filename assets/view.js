@@ -75,6 +75,31 @@ function _container_inject_controls() {
 	wrap.querySelector("#container-renew-btn").addEventListener("click", function () {
 		container_renew(challengeId);
 	});
+
+	// Check if this user already has a container for this challenge.
+	fetch("/containers/api/running/" + challengeId, {
+		method: "GET",
+		headers: { "Accept": "application/json" },
+		credentials: "same-origin",
+	})
+		.then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+		.then(function (res) {
+			var data = res.data || {};
+			if (data.status === "running") {
+				var btn = wrap.querySelector("#container-request-btn");
+				if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+				_container_show_running(data, { removeRequestButton: true });
+			} else if (data.status === "provisioning") {
+				var btn2 = wrap.querySelector("#container-request-btn");
+				if (btn2) {
+					var originalLabel = btn2.innerHTML;
+					btn2.setAttribute("disabled", "disabled");
+					btn2.innerHTML = "Provisioning…";
+					_container_poll_status(data.id, btn2, originalLabel, { removeRequestButton: true });
+				}
+			}
+		})
+		.catch(function () { /* fall back to fresh-request UI */ });
 }
 
 CTFd._internal.challenge.postRender = function () {

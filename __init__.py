@@ -387,6 +387,34 @@ def load(app: Flask):
             return {"status": "failed", "error": row.error_message or "Provisioning failed"}, 200
         return {"status": "provisioning", "id": row.id}, 202
 
+    @containers_bp.route('/api/running/<int:chal_id>', methods=['GET'])
+    @authed_only
+    @ratelimit(method="GET", limit=120, interval=60)
+    def route_running_container(chal_id):
+        user = get_current_user()
+        if user is None:
+            return {"error": "User not found"}, 400
+        row = ContainerInfoModel.query.filter_by(
+            challenge_id=chal_id, user_id=user.id).first()
+        if row is None:
+            return {"status": "none"}, 200
+        if row.status == "running":
+            try:
+                if container_manager.is_container_running(row.container_id):
+                    return _running_response(row), 200
+            except ContainerException:
+                pass
+            # Stale row — backend reports container is gone. Clean it up
+            # so the next request can spawn a fresh one.
+            db.session.delete(row)
+            db.session.commit()
+            return {"status": "none"}, 200
+        if row.status == "provisioning":
+            return {"status": "provisioning", "id": row.id}, 202
+        if row.status == "failed":
+            return {"status": "failed", "error": row.error_message or "Provisioning failed"}, 200
+        return {"status": "none"}, 200
+
     @containers_bp.route('/api/renew', methods=['POST'])
     @authed_only
     @during_ctf_time_only
