@@ -80,6 +80,13 @@ class ContainerChallenge(BaseChallenge):
 
     @classmethod
     def calculate_value(cls, challenge):
+        # No decay curve configured — treat as a static challenge worth `initial`.
+        if not challenge.decay:
+            if challenge.initial is not None:
+                challenge.value = challenge.initial
+                db.session.commit()
+            return challenge
+
         Model = get_model()
 
         solve_count = (
