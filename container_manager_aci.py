@@ -2,7 +2,30 @@ import atexit
 import re
 import shlex
 import time
+import unicodedata
 import uuid
+
+
+def _slugify(value, max_len=20, fallback="user"):
+    """Return a DNS-safe slug for ACI container-group and DNS labels.
+
+    Azure requires names to be lowercase alphanumeric or hyphens, start
+    and end with alphanumeric, and at most 63 chars (full group name).
+    """
+    if not value:
+        return fallback
+    # Strip accents and decompose unicode to ASCII where possible.
+    normalized = unicodedata.normalize("NFKD", str(value))
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    ascii_only = ascii_only.lower()
+    # Replace any run of non-alphanumeric chars with a single hyphen.
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_only)
+    slug = slug.strip("-")
+    if not slug:
+        return fallback
+    if len(slug) > max_len:
+        slug = slug[:max_len].rstrip("-")
+    return slug or fallback
 
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -209,9 +232,7 @@ class ACIContainerManager:
 
         unique = uuid.uuid4().hex[:4]
         if owner:
-            slug = re.sub(r"[^a-z0-9-]+", "-", owner.lower()).strip("-")
-            slug = re.sub(r"-{2,}", "-", slug) or "user"
-            group_name = f"{dns_prefix}-{slug}-{unique}"
+            group_name = f"{dns_prefix}-{_slugify(owner)}-{unique}"
         else:
             group_name = f"{dns_prefix}-{uuid.uuid4().hex[:8]}"
         group_name = group_name[:63].rstrip("-")
