@@ -36,9 +36,9 @@
 		style="float:right;margin-right:10px">Settings</a>
 
 	{% if connected %}
-	<span class="badge badge-success">Docker Connected</span>
+	<span class="badge badge-success">{{ backend_label }} Connected</span>
 	{% else %}
-	<span class="badge badge-danger">Docker Not Connected</span>
+	<span class="badge badge-danger">{{ backend_label }} Not Connected</span>
 	{% endif %}
 
 	<table class="table">
