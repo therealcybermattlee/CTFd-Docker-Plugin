@@ -35,7 +35,7 @@ from CTFd.utils.decorators import authed_only, admins_only, during_ctf_time_only
 from CTFd.utils.user import get_current_user
 from CTFd.utils.modes import get_model
 
-from .models import ContainerChallengeModel, ContainerInfoModel, ContainerSettingsModel
+from .models import ContainerChallengeModel, ContainerInfoModel, ContainerSettingsModel, resolve_size
 from .container_manager import ContainerManager, ContainerException
 from .container_manager_aci import ACIContainerManager
 
@@ -79,6 +79,7 @@ class ContainerChallenge(BaseChallenge):
             "image": challenge.image,
             "port": challenge.port,
             "command": challenge.command,
+            "size": challenge.size,
             "initial": challenge.initial,
             "decay": challenge.decay,
             "minimum": challenge.minimum,
@@ -187,8 +188,37 @@ def settings_to_dict(settings):
     }
 
 
+def _ensure_size_column():
+    """Add the per-challenge `size` column on installs that predate it.
+
+    `db.create_all()` creates missing tables but never ALTERs existing ones, so
+    upgrading an instance that already has challenges needs this. The ADD COLUMN
+    ... DEFAULT 'small' also backfills existing rows on MySQL/MariaDB and SQLite,
+    so legacy challenges keep their current 1 vCPU / 1.5 GB behavior. Idempotent.
+    """
+    from sqlalchemy import inspect as sa_inspect, text
+
+    table = ContainerChallengeModel.__table__.name
+    try:
+        columns = [c["name"] for c in sa_inspect(db.engine).get_columns(table)]
+    except Exception as e:
+        print(f"[CTFd] could not inspect {table} for `size` column: {e}")
+        return
+    if "size" in columns:
+        return
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN size VARCHAR(16) DEFAULT 'small'")
+            )
+        print(f"[CTFd] added `size` column to {table}")
+    except Exception as e:
+        print(f"[CTFd] failed to add `size` column to {table}: {e}")
+
+
 def load(app: Flask):
     app.db.create_all()
+    _ensure_size_column()
     CHALLENGE_CLASSES["container"] = ContainerChallenge
     register_plugin_assets_directory(
         app, base_path="/plugins/containers/assets/"
@@ -256,12 +286,12 @@ def load(app: Flask):
             "expires": row.expires,
         }
 
-    def _provision_async(manager, row_id, image, internal_port, command, volumes, expiration_seconds, owner=None):
+    def _provision_async(manager, row_id, image, internal_port, command, volumes, expiration_seconds, owner=None, cpu=None, memory=None):
         with app.app_context():
             if ContainerInfoModel.query.get(row_id) is None:
                 return
             try:
-                created = manager.create_container(image, internal_port, command, volumes, owner=owner)
+                created = manager.create_container(image, internal_port, command, volumes, owner=owner, cpu=cpu, memory=memory)
             except ContainerException as e:
                 row = ContainerInfoModel.query.get(row_id)
                 if row is not None:
@@ -333,12 +363,13 @@ def load(app: Flask):
                 return {"status": existing.status, "id": existing.id}, 202
             return {"error": "Concurrent request collision"}, 500
 
+        cpu, memory_mb = resolve_size(getattr(challenge, "size", None))
         threading.Thread(
             target=_provision_async,
             args=(container_manager, row.id, challenge.image, challenge.port,
                   challenge.command, challenge.volumes,
                   container_manager.expiration_seconds),
-            kwargs={"owner": user_name},
+            kwargs={"owner": user_name, "cpu": cpu, "memory": memory_mb},
             daemon=True,
         ).start()
 

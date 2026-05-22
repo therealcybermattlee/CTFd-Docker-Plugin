@@ -144,26 +144,29 @@ class ContainerManager:
         return container[0].status == "running"
 
     @run_command
-    def create_container(self, image: str, port: int, command: str, volumes: str, owner: str = None):
+    def create_container(self, image: str, port: int, command: str, volumes: str, owner: str = None, cpu: float = None, memory: int = None):
         kwargs = {}
 
-        # Set the memory and CPU limits for the container
-        if self.settings.get("container_maxmemory"):
+        # Set the memory and CPU limits for the container. A per-challenge size
+        # tier (memory in MB, cpu in vCPU) takes precedence over the global setting.
+        mem_source = memory if memory is not None else self.settings.get("container_maxmemory")
+        if mem_source:
             try:
-                mem_limit = int(self.settings.get("container_maxmemory"))
+                mem_limit = int(mem_source)
                 if mem_limit > 0:
                     kwargs["mem_limit"] = f"{mem_limit}m"
-            except ValueError:
-                ContainerException(
+            except (TypeError, ValueError):
+                raise ContainerException(
                     "Configured container memory limit must be an integer")
-        if self.settings.get("container_maxcpu"):
+        cpu_source = cpu if cpu is not None else self.settings.get("container_maxcpu")
+        if cpu_source:
             try:
-                cpu_period = float(self.settings.get("container_maxcpu"))
+                cpu_period = float(cpu_source)
                 if cpu_period > 0:
                     kwargs["cpu_quota"] = int(cpu_period * 100000)
                     kwargs["cpu_period"] = 100000
-            except ValueError:
-                ContainerException(
+            except (TypeError, ValueError):
+                raise ContainerException(
                     "Configured container CPU limit must be a number")
 
         if volumes is not None and volumes != "":

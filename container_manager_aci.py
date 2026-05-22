@@ -202,7 +202,7 @@ class ACIContainerManager:
             if deleted:
                 db.session.commit()
 
-    def create_container(self, image: str, port: int, command: str, volumes: str, owner: str = None):
+    def create_container(self, image: str, port: int, command: str, volumes: str, owner: str = None, cpu: float = None, memory: int = None):
         if self.client is None:
             raise ContainerException("ACI client is not initialized")
 
@@ -212,23 +212,38 @@ class ACIContainerManager:
         login_server = self.settings.get("acr_login_server", "")
         dns_prefix = self.settings.get("azure_dns_label_prefix", "ctfd")
 
-        cpu = 1.0
+        # Per-challenge size tier (cpu vCPU, memory MB) wins; otherwise fall back
+        # to the global settings, then to the historical 1 vCPU / 1.5 GB default.
+        cpu_value = 1.0
         memory_gb = 1.5
+
+        if memory is not None:
+            mem_source = memory
+        else:
+            mem_source = self.settings.get("container_maxmemory")
         try:
-            mem_mb = int(self.settings.get("container_maxmemory") or 0)
-            if mem_mb > 0:
-                memory_gb = max(ACI_MIN_MEM_GB, min(ACI_MAX_MEM_GB, mem_mb / 1024))
-        except ValueError:
-            pass
-        # ACI requires memory to be in 0.1 GB increments and CPU in 0.01 increments.
+            mem_mb = int(mem_source or 0)
+        except (TypeError, ValueError):
+            mem_mb = 0
+        if mem_mb > 0:
+            memory_gb = mem_mb / 1024
+        memory_gb = max(ACI_MIN_MEM_GB, min(ACI_MAX_MEM_GB, memory_gb))
+
+        if cpu is not None:
+            cpu_source = cpu
+        else:
+            cpu_source = self.settings.get("container_maxcpu")
+        try:
+            cpu_candidate = float(cpu_source or 0)
+        except (TypeError, ValueError):
+            cpu_candidate = 0
+        if cpu_candidate > 0:
+            cpu_value = cpu_candidate
+        cpu_value = max(ACI_MIN_CPU, min(ACI_MAX_CPU, cpu_value))
+
+        # ACI requires memory in 0.1 GB increments and CPU in 0.01 increments.
         memory_gb = round(memory_gb * 10) / 10
-        try:
-            cpu_setting = float(self.settings.get("container_maxcpu") or 0)
-            if cpu_setting > 0:
-                cpu = max(ACI_MIN_CPU, min(ACI_MAX_CPU, cpu_setting))
-        except ValueError:
-            pass
-        cpu = round(cpu * 100) / 100
+        cpu_value = round(cpu_value * 100) / 100
 
         unique = uuid.uuid4().hex[:4]
         if owner:
@@ -260,7 +275,7 @@ class ACIContainerManager:
             image=image,
             command=command_list,
             resources=ResourceRequirements(
-                requests=ResourceRequests(memory_in_gb=memory_gb, cpu=cpu)
+                requests=ResourceRequests(memory_in_gb=memory_gb, cpu=cpu_value)
             ),
             ports=[ContainerPort(port=port)],
         )

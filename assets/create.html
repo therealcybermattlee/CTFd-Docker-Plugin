@@ -70,6 +70,21 @@
 
 <div class="form-group">
 	<label>
+		Size<br>
+		<small class="form-text text-muted">
+			Resources allocated to the container. Use a larger tier for heavy
+			workloads (e.g. an LLM). Defaults to Small.
+		</small>
+	</label>
+	<select class="form-control" name="size">
+		<option value="small" selected>Small &mdash; 1 vCPU / 1.5 GB</option>
+		<option value="medium">Medium &mdash; 2 vCPU / 4 GB</option>
+		<option value="large">Large &mdash; 4 vCPU / 16 GB</option>
+	</select>
+</div>
+
+<div class="form-group">
+	<label>
 		Volumes<br>
 		<small class="form-text text-muted">
 			Custom volumes to mount, in JSON. E.g.

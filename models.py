@@ -5,6 +5,24 @@ from CTFd.models import db
 from CTFd.models import Challenges
 
 
+# Preset resource tiers for container challenges: name -> (vCPU, memory in MB).
+# "small" matches the historical default (1 vCPU / 1.5 GB). The largest tier
+# is capped to Azure Container Instances' per-container ceiling (4 vCPU / 16 GB).
+CONTAINER_SIZES = {
+    "small": (1.0, 1536),
+    "medium": (2.0, 4096),
+    "large": (4.0, 16384),
+}
+DEFAULT_CONTAINER_SIZE = "small"
+
+
+def resolve_size(name):
+    """Map a size-tier name to (cpu_vcpu, memory_mb), defaulting to small."""
+    return CONTAINER_SIZES.get(
+        name or DEFAULT_CONTAINER_SIZE, CONTAINER_SIZES[DEFAULT_CONTAINER_SIZE]
+    )
+
+
 class ContainerChallengeModel(Challenges):
     __mapper_args__ = {"polymorphic_identity": "container"}
     id = db.Column(
@@ -14,6 +32,8 @@ class ContainerChallengeModel(Challenges):
     port = db.Column(db.Integer)
     command = db.Column(db.Text, default="")
     volumes = db.Column(db.Text, default="")
+    # Resource tier name (key into CONTAINER_SIZES). "small" == legacy default.
+    size = db.Column(db.String(16), default=DEFAULT_CONTAINER_SIZE)
 
     # Dynamic challenge properties
     initial = db.Column(db.Integer, default=0)
