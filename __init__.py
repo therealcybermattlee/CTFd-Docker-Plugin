@@ -90,8 +90,11 @@ class ContainerChallenge(BaseChallenge):
         # Scoring Function selector submits `value` directly for Static
         # challenges (the legacy `initial` column isn't editable from that UI),
         # so trust whatever the form just set and don't clobber it with the
-        # stale `initial` from when the challenge was first created.
+        # stale `initial` from when the challenge was first created. We still
+        # need to commit so the setattr() changes from update() persist —
+        # CTFd's PATCH wrapper doesn't commit on its own.
         if not challenge.decay:
+            db.session.commit()
             return challenge
 
         Model = get_model()
