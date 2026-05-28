@@ -86,11 +86,12 @@ class ContainerChallenge(BaseChallenge):
 
     @classmethod
     def calculate_value(cls, challenge):
-        # No decay curve configured — treat as a static challenge worth `initial`.
+        # No decay curve configured — Static scoring. CTFd 3.8.x's unified
+        # Scoring Function selector submits `value` directly for Static
+        # challenges (the legacy `initial` column isn't editable from that UI),
+        # so trust whatever the form just set and don't clobber it with the
+        # stale `initial` from when the challenge was first created.
         if not challenge.decay:
-            if challenge.initial is not None:
-                challenge.value = challenge.initial
-                db.session.commit()
             return challenge
 
         Model = get_model()
