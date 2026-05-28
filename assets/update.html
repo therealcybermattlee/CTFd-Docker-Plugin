@@ -48,8 +48,11 @@
 		</small>
 	</label>
 	<select type="text" class="form-control" name="image" placeholder="Enter image" id="container-image"
-		title="Name of the Docker image to spin up" required disabled>
-		<option value="" id="container-image-default" disabled selected>Loading...</option>
+		title="Name of the Docker image to spin up" required>
+		{% if challenge.image %}
+		<option value="{{ challenge.image }}" selected>{{ challenge.image }}</option>
+		{% endif %}
+		<option value="" id="container-image-default" disabled>Loading more from registry&hellip;</option>
 	</select>
 </div>
 

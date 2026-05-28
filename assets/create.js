@@ -3,30 +3,46 @@ CTFd.plugin.run((_CTFd) => {
 	const md = _CTFd.lib.markdown();
 });
 
-var containerImage = document.getElementById("container-image");
-var containerImageDefault = document.getElementById("container-image-default");
-var path = "/containers/api/images";
+(function () {
+	var containerImage = document.getElementById("container-image");
+	var containerImageDefault = document.getElementById("container-image-default");
 
-var xhr = new XMLHttpRequest();
-xhr.open("GET", path, true);
-xhr.setRequestHeader("Accept", "application/json");
-xhr.setRequestHeader("CSRF-Token", init.csrfNonce);
-xhr.send();
-xhr.onload = function () {
-	var data = JSON.parse(this.responseText);
-	if (data.error != undefined) {
-		// Error
-		containerImageDefault.innerHTML = data.error;
-	} else {
-		// Success
-		for (var i = 0; i < data.images.length; i++) {
+	function setStatus(msg) {
+		if (containerImageDefault) containerImageDefault.innerHTML = msg;
+	}
+
+	var xhr = new XMLHttpRequest();
+	xhr.open("GET", "/containers/api/images", true);
+	xhr.setRequestHeader("Accept", "application/json");
+	xhr.setRequestHeader("CSRF-Token", init.csrfNonce);
+
+	xhr.onload = function () {
+		var data;
+		try {
+			data = JSON.parse(this.responseText);
+		} catch (e) {
+			setStatus("Could not load image list (HTTP " + this.status + ")");
+			console.error("image list parse failed:", e, this.responseText);
+			return;
+		}
+		if (data && data.error !== undefined) {
+			setStatus("Image list error: " + data.error);
+			console.error("image list error:", data.error);
+			return;
+		}
+		var images = (data && data.images) || [];
+		for (var i = 0; i < images.length; i++) {
 			var opt = document.createElement("option");
-			opt.value = data.images[i];
-			opt.innerHTML = data.images[i];
+			opt.value = images[i];
+			opt.innerHTML = images[i];
 			containerImage.appendChild(opt);
 		}
-		containerImageDefault.innerHTML = "Choose an image...";
+		setStatus(images.length === 0 ? "(registry returned no images)" : "Choose an image…");
 		containerImage.removeAttribute("disabled");
-	}
-	console.log(data);
-};
+	};
+	xhr.onerror = function () {
+		setStatus("Could not reach /containers/api/images");
+		console.error("image list xhr.onerror");
+	};
+	xhr.send();
+})();
