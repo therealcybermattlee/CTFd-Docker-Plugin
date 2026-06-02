@@ -156,20 +156,32 @@ class ContainerChallenge(BaseChallenge):
 
         ContainerChallenge.calculate_value(challenge)
 
-        # Tear down the player's container for this challenge — it's served
-        # its purpose and we don't want to keep paying ACI for it.
+        # Tear down the player's container for this challenge — but do the slow
+        # backend kill (an ACI container-group delete can take many seconds) in
+        # a background thread so the player's flag-submit response isn't blocked
+        # on Azure. CTFd calls solve() inline within the attempt request, so a
+        # synchronous kill here makes the "Correct"/solved state wait on the
+        # teardown. We drop the tracking row now (fast, local) and fire the
+        # actual backend kill in a daemon thread — same pattern the provisioner
+        # uses. The container still dies on solve, just a beat after the player
+        # sees "Correct" instead of before.
         manager = getattr(cls, "container_manager", None)
         if manager is not None and user is not None:
             info = ContainerInfoModel.query.filter_by(
                 challenge_id=challenge.id, user_id=user.id).first()
             if info is not None:
-                if info.container_id:
-                    try:
-                        manager.kill_container(info.container_id)
-                    except ContainerException as e:
-                        print(f"[CTFd] solve cleanup kill failed for {info.container_id}: {e}")
+                container_id = info.container_id
                 db.session.delete(info)
                 db.session.commit()
+                if container_id:
+                    def _teardown(cid):
+                        try:
+                            manager.kill_container(cid)
+                        except Exception as e:
+                            print(f"[CTFd] solve cleanup kill failed for {cid}: {e}")
+                    threading.Thread(
+                        target=_teardown, args=(container_id,), daemon=True
+                    ).start()
 
 
 def settings_to_dict(settings):
